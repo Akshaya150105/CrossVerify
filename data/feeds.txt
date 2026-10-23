@@ -1,0 +1,4 @@
+# One RSS/Atom feed URL per line. Check each site's terms of use before crawling.
+# These are examples; replace or extend with feeds you are allowed to use for research.
+https://feeds.bbci.co.uk/news/rss.xml
+https://www.theguardian.com/world/rss

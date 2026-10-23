@@ -1,0 +1,7 @@
+[
+  {"query": "a man boarding up a house before a hurricane", "relevant": [9]},
+  {"query": "a horse pulling a carriage in New York City", "relevant": [78]},
+  {"query": "protesters carrying signs in the rain", "relevant": [58]},
+  {"query": "wildfire near homes in Indonesia", "relevant": [47]},
+  {"query": "Pope Leo recovering in hospital", "relevant": [11]}
+]
