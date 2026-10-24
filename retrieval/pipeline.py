@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,38 +40,51 @@ class SearchPipeline:
         self.db_path = Path(db_path)
         self.index_dir = Path(index_dir)
         self._clip, self._bm25, self._reranker, self._checker = clip, bm25, reranker, checker
+        self._lock = threading.Lock()
 
     # ---- lazily-loaded components (CLIP/cross-encoder are slow to load) ----
+    # Guarded by a lock: the API serves concurrent requests from a threadpool,
+    # and an unguarded check-then-set here lets one thread hand out a
+    # half-built BM25Retriever/model to another before it finishes loading.
     @property
     def clip(self):
         if self._clip is None:
-            from retrieval.hybrid_search import ClipImageRetriever
+            with self._lock:
+                if self._clip is None:
+                    from retrieval.hybrid_search import ClipImageRetriever
 
-            self._clip = ClipImageRetriever(self.index_dir)
+                    self._clip = ClipImageRetriever(self.index_dir)
         return self._clip
 
     @property
     def bm25(self):
         if self._bm25 is None:
-            self._bm25 = BM25Retriever(self.db_path)
-            self._bm25.load_documents()
-            self._bm25.build_index()
+            with self._lock:
+                if self._bm25 is None:
+                    bm25 = BM25Retriever(self.db_path)
+                    bm25.load_documents()
+                    bm25.build_index()
+                    self._bm25 = bm25
         return self._bm25
 
     @property
     def reranker(self):
         if self._reranker is None:
-            from reranking.cross_encoder import CrossEncoderReranker
+            with self._lock:
+                if self._reranker is None:
+                    from reranking.cross_encoder import CrossEncoderReranker
 
-            self._reranker = CrossEncoderReranker()
+                    self._reranker = CrossEncoderReranker()
         return self._reranker
 
     @property
     def checker(self):
         if self._checker is None:
-            from consistency.checker import ConsistencyChecker, load_threshold
+            with self._lock:
+                if self._checker is None:
+                    from consistency.checker import ConsistencyChecker, load_threshold
 
-            self._checker = ConsistencyChecker(self.clip, load_threshold())
+                    self._checker = ConsistencyChecker(self.clip, load_threshold())
         return self._checker
 
     # ---- data access ----
@@ -132,7 +146,7 @@ class SearchPipeline:
         top_k: int = 10,
         candidate_k: int = 50,
         expand: bool = False,
-        rerank: bool = False,
+        rerank: bool = True,
         feedback: dict | None = None,
         use_keybert: bool = False,
         with_consistency: bool = True,

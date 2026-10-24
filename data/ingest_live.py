@@ -31,7 +31,7 @@ import trafilatura
 from bs4 import BeautifulSoup
 from PIL import Image
 
-USER_AGENT = "CrossVerifyResearchBot/0.1 (academic project; contact: your-email@example.com)"
+USER_AGENT = "CrossVerifyResearchBot/0.1 (academic project; contact: research-bot@example.com)"
 MIN_SIDE = 180      # drop tiny images (icons, trackers)
 MAX_DIM = 512       # resize longest side to this
 TIMEOUT = 20

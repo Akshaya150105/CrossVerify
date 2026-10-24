@@ -2,7 +2,8 @@
 
 Run from the project root:
     poetry run uvicorn api.main:app --reload
-Set CROSSVERIFY_RERANK=1 to enable the cross-encoder by default.
+
+Every search is cross-encoder re-ranked; this is not a caller-configurable option.
 """
 
 from __future__ import annotations
@@ -51,7 +52,6 @@ class SearchRequest(BaseModel):
     mode: str = "rrf"
     top_k: int = Field(10, ge=1, le=50)
     expand: bool = False
-    rerank: bool = os.getenv("CROSSVERIFY_RERANK") == "1"
     feedback: Feedback | None = None
 
 
@@ -86,7 +86,6 @@ def search(req: SearchRequest):
         mode=req.mode,
         top_k=req.top_k,
         expand=req.expand,
-        rerank=req.rerank,
         feedback=req.feedback.model_dump() if req.feedback else None,
     )
     return {"query": req.query, "results": [public(r) for r in results]}

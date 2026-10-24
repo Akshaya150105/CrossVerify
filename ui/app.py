@@ -14,17 +14,20 @@ BADGES = {"aligned": "🟢 aligned", "low_alignment": "🟠 low image-caption al
 
 st.set_page_config(page_title="CrossVerify", layout="wide")
 st.title("CrossVerify")
-st.caption("Multi-modal news retrieval with provenance. A low alignment score is not proof of misinformation.")
+st.caption(
+    "Multi-modal news retrieval with provenance. Every result is cross-encoder "
+    "re-ranked. A low alignment score is not proof of misinformation."
+)
 
-for key, default in (("results", []), ("relevant", set()), ("irrelevant", set()), ("last_query", "")):
+for key, default in (("results", []), ("relevant", set()), ("irrelevant", set()), ("last_query", ""), ("last_mode", "rrf")):
     st.session_state.setdefault(key, default)
 
 with st.sidebar:
     st.header("Search settings")
-    mode = st.selectbox("Ranking", ["rrf", "clip", "bm25"], help="rrf = CLIP + BM25 fused")
+    mode = st.selectbox("Retrieval method", ["rrf", "clip", "bm25"], help="rrf = CLIP + BM25 fused (recommended)")
     top_k = st.slider("Results", 3, 20, 8)
     expand = st.checkbox("Query expansion (WordNet)")
-    rerank = st.checkbox("Cross-encoder re-ranking")
+    st.caption("Cross-encoder re-ranking is always applied before results are shown.")
 
 tab_text, tab_image, tab_check = st.tabs(["Text search", "Image search", "Check image + caption"])
 
@@ -41,52 +44,80 @@ def call(path: str, **kwargs):
 
 def render_reuse(matches: list[dict]):
     if matches:
-        st.warning(f"Image reuse: {len(matches)} other article(s) use the same/near-identical image")
+        st.warning(f"⚠️ Image reuse: {len(matches)} other article(s) use the same/near-identical image")
         for m in matches:
             st.markdown(f"- #{m['article_id']} **{m['headline']}** ({m['source']}, {m['date']}) — distance {m['distance']}")
 
 
+def render_provenance(r: dict):
+    """Provenance is the primary evidence for a result, so it is always visible, not tucked away."""
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown(
+            f"**Publisher:** {r['source']}  \n"
+            f"**Article URL:** [{r['url']}]({r['url']})  \n"
+            f"**Fetched:** {r.get('fetched_at') or 'unknown'}"
+        )
+    with right:
+        image_url = r.get("image_url")
+        image_link = f"[{image_url}]({image_url})" if image_url else "unknown"
+        st.markdown(
+            f"**Image URL:** {image_link}  \n"
+            f"**Caption source:** {r.get('caption_source') or 'unknown'}  \n"
+            f"**Image hash (pHash):** `{r.get('phash') or 'unknown'}`"
+        )
+
+
 def render_results(results: list[dict], allow_feedback: bool):
+    if not results:
+        st.info("No results.")
+        return
     for r in results:
-        left, right = st.columns([1, 3])
-        with left:
-            st.image(f"{API}{r['image_url_local']}", use_container_width=True)
-        with right:
-            st.markdown(f"### [{r['headline']}]({r['url']})")
-            st.caption(f"{r['source']} · {r.get('date') or 'date unknown'} · score {r['score']:.4f}")
-            st.write(f"**Caption:** {r.get('caption') or '—'}")
-            cons = r.get("consistency")
-            if cons:
-                st.markdown(f"{BADGES.get(cons['status'], cons['status'])} (cosine {cons['similarity']:.3f})")
-            render_reuse(r.get("reuse_matches", []))
-            with st.expander("Provenance & why this ranked"):
-                st.markdown(
-                    f"- **Publisher:** {r['source']}\n- **Article URL:** {r['url']}\n"
-                    f"- **Image URL:** {r.get('image_url')}\n- **Fetched:** {r.get('fetched_at')}\n"
-                    f"- **Caption source:** {r.get('caption_source')}\n- **pHash:** `{r.get('phash')}`"
-                )
-                st.json({"ranking": r.get("explanation"), "rerank_score": r.get("rerank_score"),
-                         "query_variants": r.get("variants")})
-            if allow_feedback:
-                aid = r["article_id"]
-                c1, c2, _ = st.columns([1, 1, 6])
-                if c1.button("👍", key=f"up{aid}"):
-                    st.session_state.relevant.add(aid); st.session_state.irrelevant.discard(aid)
-                if c2.button("👎", key=f"down{aid}"):
-                    st.session_state.irrelevant.add(aid); st.session_state.relevant.discard(aid)
-                if aid in st.session_state.relevant:
-                    st.caption("Marked relevant")
-                if aid in st.session_state.irrelevant:
-                    st.caption("Marked not relevant")
-        st.divider()
+        with st.container(border=True):
+            img_col, main_col = st.columns([1, 3])
+            with img_col:
+                st.image(f"{API}{r['image_url_local']}", use_container_width=True)
+                cons = r.get("consistency")
+                if cons:
+                    st.markdown(f"{BADGES.get(cons['status'], cons['status'])}  \ncosine {cons['similarity']:.3f}")
+            with main_col:
+                st.markdown(f"#### [{r['headline']}]({r['url']})")
+                st.caption(f"{r['source']} · {r.get('date') or 'date unknown'} · relevance score {r['score']:.4f}")
+                st.write(f"**Caption:** {r.get('caption') or '—'}")
+
+                st.markdown("**Provenance**")
+                render_provenance(r)
+                render_reuse(r.get("reuse_matches", []))
+
+                with st.expander("Ranking details"):
+                    st.json({"ranking": r.get("explanation"), "rerank_score": r.get("rerank_score"),
+                             "query_variants": r.get("variants")})
+
+                if allow_feedback:
+                    aid = r["article_id"]
+                    c1, c2, _ = st.columns([1, 1, 6])
+                    if c1.button("👍 Relevant", key=f"up{aid}"):
+                        st.session_state.relevant.add(aid)
+                        st.session_state.irrelevant.discard(aid)
+                        st.rerun()
+                    if c2.button("👎 Not relevant", key=f"down{aid}"):
+                        st.session_state.irrelevant.add(aid)
+                        st.session_state.relevant.discard(aid)
+                        st.rerun()
+                    if aid in st.session_state.relevant:
+                        st.caption("✅ Marked relevant")
+                    elif aid in st.session_state.irrelevant:
+                        st.caption("🚫 Marked not relevant")
 
 
 def run_search(query: str, feedback: dict | None = None):
-    payload = {"query": query, "mode": mode, "top_k": top_k, "expand": expand, "rerank": rerank, "feedback": feedback}
+    payload = {"query": query, "mode": mode, "top_k": top_k, "expand": expand, "feedback": feedback}
     data = call("/search", json=payload)
     if data:
         st.session_state.results = data["results"]
         st.session_state.last_query = query
+        st.session_state.last_mode = mode
 
 
 with tab_text:
@@ -94,12 +125,20 @@ with tab_text:
     if st.button("Search", type="primary") and query:
         st.session_state.relevant, st.session_state.irrelevant = set(), set()
         run_search(query)
+
     if st.session_state.results and st.session_state.last_query:
-        if st.session_state.relevant or st.session_state.irrelevant:
-            if st.button("Refine results with my feedback (Rocchio)"):
-                run_search(st.session_state.last_query, {
-                    "relevant": sorted(st.session_state.relevant),
-                    "irrelevant": sorted(st.session_state.irrelevant)})
+        n_rel, n_irr = len(st.session_state.relevant), len(st.session_state.irrelevant)
+        if n_rel or n_irr:
+            if st.session_state.last_mode == "bm25":
+                st.caption(
+                    "Relevance feedback refines the CLIP similarity signal, so it has no effect "
+                    "in BM25-only mode — switch to rrf or clip to use it."
+                )
+            else:
+                if st.button(f"🔁 Refine results with feedback ({n_rel} relevant, {n_irr} not relevant)", type="primary"):
+                    run_search(st.session_state.last_query, {
+                        "relevant": sorted(st.session_state.relevant),
+                        "irrelevant": sorted(st.session_state.irrelevant)})
         render_results(st.session_state.results, allow_feedback=True)
 
 with tab_image:
