@@ -23,7 +23,10 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from analysis.event_clustering import load_or_build_events
+from analysis.reuse_graph import load_or_build_graph
 from common import resolve_image_path
+from consistency.reuse import DEFAULT_MAX_DISTANCE
 from retrieval.pipeline import DEFAULT_DB, DEFAULT_INDEX, MODES, SearchPipeline
 
 state: dict = {}
@@ -113,6 +116,38 @@ def consistency(file: UploadFile = File(...), caption: str = Form(...)):
     with sqlite3.connect(pipe.db_path) as conn:
         reuse = matches_for(conn, str(imagehash.phash(image)))
     return {"consistency": verdict, "reuse_matches": reuse}
+
+
+@app.get("/events")
+def events(min_size: int = 2, distance_threshold: float = 0.15, max_days_gap: int = 10):
+    """Articles clustered into story timelines (cached by analysis/event_clustering.py
+    for a large corpus; query params are only honored when there is no cache file,
+    since a precomputed cache was already built with its own parameters)."""
+
+    pipe = state["pipe"]
+    cache_path = Path(pipe.db_path).parent / "event_clusters.json"
+    clusters = load_or_build_events(
+        pipe.db_path,
+        pipe.clip.encode_text,
+        cache_path=cache_path,
+        min_size=min_size,
+        distance_threshold=distance_threshold,
+        max_days_gap=max_days_gap,
+    )
+    for event in clusters:
+        for a in event["articles"]:
+            a["image_url_local"] = f"/image/{a['article_id']}"
+    return {"events": clusters}
+
+
+@app.get("/reuse-graph")
+def reuse_graph(max_distance: int = DEFAULT_MAX_DISTANCE):
+    """Articles connected by shared/near-duplicate images (cached by
+    analysis/reuse_graph.py for a large corpus, since it's O(n^2))."""
+
+    pipe = state["pipe"]
+    cache_path = Path(pipe.db_path).parent / "reuse_graph.json"
+    return load_or_build_graph(pipe.db_path, cache_path=cache_path, max_distance=max_distance)
 
 
 @app.get("/article/{article_id}")

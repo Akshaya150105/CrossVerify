@@ -8,6 +8,8 @@ import os
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
+from pyvis.network import Network
 
 API = os.getenv("CROSSVERIFY_API", "http://127.0.0.1:8000")
 BADGES = {"aligned": "🟢 aligned", "low_alignment": "🟠 low image-caption alignment", "unknown": "⚪ not calibrated"}
@@ -29,12 +31,24 @@ with st.sidebar:
     expand = st.checkbox("Query expansion (WordNet)")
     st.caption("Cross-encoder re-ranking is always applied before results are shown.")
 
-tab_text, tab_image, tab_check = st.tabs(["Text search", "Image search", "Check image + caption"])
+tab_text, tab_image, tab_check, tab_timelines, tab_graph = st.tabs(
+    ["Text search", "Image search", "Check image + caption", "Story timelines", "Reuse graph"]
+)
 
 
 def call(path: str, **kwargs):
     try:
         response = requests.post(f"{API}{path}", timeout=120, **kwargs)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as exc:
+        st.error(f"API error: {exc}")
+        return None
+
+
+def call_get(path: str, **params):
+    try:
+        response = requests.get(f"{API}{path}", params=params, timeout=120)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
@@ -158,3 +172,66 @@ with tab_check:
             st.markdown(f"**{BADGES.get(c['status'], c['status'])}** — cosine {c['similarity']:.3f} (threshold {c['threshold']})")
             st.info(c["note"])
             render_reuse(data["reuse_matches"])
+
+with tab_timelines:
+    st.caption(
+        "Articles clustered by headline similarity, gated so only stories reported "
+        "within a few days of each other can merge into one timeline."
+    )
+    if st.button("Build timelines"):
+        data = call_get("/events")
+        st.session_state.events = data["events"] if data else []
+
+    events = st.session_state.get("events")
+    if events is None:
+        st.info("Click \"Build timelines\" to cluster the corpus into story arcs.")
+    elif not events:
+        st.info("No multi-article story clusters found — try a larger or longer-running corpus.")
+    else:
+        for event in events:
+            label = f"{event['start_date']} → {event['end_date']} · {event['size']} articles · {event['headline']}"
+            with st.expander(label):
+                for a in event["articles"]:
+                    img_col, main_col = st.columns([1, 4])
+                    with img_col:
+                        st.image(f"{API}{a['image_url_local']}", use_container_width=True)
+                    with main_col:
+                        st.markdown(f"**{a['date']}** · [{a['headline']}]({a['url']}) — {a['source']}")
+                        st.caption(a.get("caption") or "—")
+                    st.divider()
+
+with tab_graph:
+    st.caption(
+        "Articles connected by a shared or near-identical image (pHash match). "
+        "Needs a corpus collected over time — a single day's pull rarely has reuse yet."
+    )
+    if st.button("Build reuse graph"):
+        st.session_state.reuse_graph = call_get("/reuse-graph")
+
+    graph = st.session_state.get("reuse_graph")
+    if graph is None:
+        st.info("Click \"Build reuse graph\" to look for image reuse across the corpus.")
+    elif not graph["edges"]:
+        st.info("No reused images detected in the current corpus.")
+    else:
+        sources = sorted({n["source"] for n in graph["nodes"]})
+        palette = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c"]
+        color_for = {s: palette[i % len(palette)] for i, s in enumerate(sources)}
+
+        net = Network(height="600px", width="100%", bgcolor="#111111", font_color="white")
+        for n in graph["nodes"]:
+            net.add_node(
+                n["id"],
+                label=n["headline"][:40],
+                title=f"{n['headline']}\n{n['source']} · {n['date']}",
+                color=color_for[n["source"]],
+            )
+        for e in graph["edges"]:
+            net.add_edge(
+                e["source"], e["target"],
+                title=f"pHash distance {e['distance']}, headline overlap {e['headline_overlap']}",
+                value=max(1, 10 - e["distance"]),
+            )
+        net.repulsion(node_distance=160)
+        components.html(net.generate_html(notebook=False), height=620, scrolling=True)
+        st.caption(f"{len(graph['nodes'])} article(s), {len(graph['edges'])} reuse edge(s)")
